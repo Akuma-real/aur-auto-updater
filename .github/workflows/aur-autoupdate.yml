@@ -87,12 +87,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "报告文件位置：${REPORT_JSON}"
-          if [[ -f "${REPORT_JSON}" ]]; then
-            ls -l "${REPORT_JSON}"
-          else
-            echo "报告文件不存在，将在 Summary 中提示缺失"
-          fi
+          summary_tmp="$(mktemp)"
 
           {
             echo "## 本次执行报告"
@@ -101,37 +96,47 @@ jobs:
             echo "- 触发方式：${GITHUB_EVENT_NAME}"
             echo "- Dry run：${DRY_RUN:-unknown}"
             echo ""
-          } >> "${GITHUB_STEP_SUMMARY}"
+          } >> "${summary_tmp}"
 
           if [[ ! -f "${REPORT_JSON}" ]]; then
-            echo "- 未生成报告文件：\`${REPORT_JSON}\`" >> "${GITHUB_STEP_SUMMARY}"
-            exit 0
+            echo "- 未生成报告文件：\`${REPORT_JSON}\`" >> "${summary_tmp}"
+          else
+            echo "| 包名 | 状态 | 当前版本 | 最新版本 | commit | pushed | 备注 |" >> "${summary_tmp}"
+            echo "|---|---|---:|---:|---|---:|---|" >> "${summary_tmp}"
+            if jq -sr '.' "${REPORT_JSON}" >/dev/null 2>&1; then
+              jq -sr '
+                .[] |
+                [
+                  (.pkgname // "-"),
+                  (.status // "-"),
+                  (.current_pkgver // "-"),
+                  (.latest_pkgver // "-"),
+                  (.commit_sha // "-"),
+                  ((.pushed|tostring) // "0"),
+                  ((.note // "-") | gsub("[\\r\\n]+"; " ") | gsub("\\|"; "\\\\|"))
+                ] |
+                "| " + (.[0:7] | join(" | ")) + " |"
+              ' "${REPORT_JSON}" >> "${summary_tmp}"
+              failed_count="$(jq -sr '[.[] | select(.status=="failed")] | length' "${REPORT_JSON}")"
+            else
+              echo "| - | failed | - | - | - | 0 | 报告文件解析失败，已附加原始内容 |" >> "${summary_tmp}"
+              echo "" >> "${summary_tmp}"
+              echo '```' >> "${summary_tmp}"
+              sed -n '1,200p' "${REPORT_JSON}" >> "${summary_tmp}"
+              echo '```' >> "${summary_tmp}"
+              failed_count="unknown"
+            fi
+            echo "" >> "${summary_tmp}"
+            echo "- 失败数量：${failed_count}" >> "${summary_tmp}"
           fi
 
-          echo "| 包名 | 状态 | 当前版本 | 最新版本 | commit | pushed | 备注 |" >> "${GITHUB_STEP_SUMMARY}"
-          echo "|---|---|---:|---:|---|---:|---|" >> "${GITHUB_STEP_SUMMARY}"
-          if jq -sr '.' "${REPORT_JSON}" >/dev/null 2>&1; then
-            jq -sr '
-              .[] |
-              [
-                (.pkgname // "-"),
-                (.status // "-"),
-                (.current_pkgver // "-"),
-                (.latest_pkgver // "-"),
-                (.commit_sha // "-"),
-                ((.pushed|tostring) // "0"),
-                ((.note // "-") | gsub("[\\r\\n]+"; " ") | gsub("\\|"; "\\\\|"))
-              ] |
-              "| " + (.[0:7] | join(" | ")) + " |"
-            ' "${REPORT_JSON}" >> "${GITHUB_STEP_SUMMARY}"
-            failed_count="$(jq -sr '[.[] | select(.status=="failed")] | length' "${REPORT_JSON}")"
+          echo "报告文件位置：${REPORT_JSON}"
+          if [[ -f "${REPORT_JSON}" ]]; then
+            ls -l "${REPORT_JSON}"
           else
-            echo "| - | failed | - | - | - | 0 | 报告文件解析失败，已附加原始内容 |" >> "${GITHUB_STEP_SUMMARY}"
-            echo "" >> "${GITHUB_STEP_SUMMARY}"
-            echo '```' >> "${GITHUB_STEP_SUMMARY}"
-            sed -n '1,200p' "${REPORT_JSON}" >> "${GITHUB_STEP_SUMMARY}"
-            echo '```' >> "${GITHUB_STEP_SUMMARY}"
-            failed_count="unknown"
+            echo "报告文件不存在"
           fi
-          echo "" >> "${GITHUB_STEP_SUMMARY}"
-          echo "- 失败数量：${failed_count}" >> "${GITHUB_STEP_SUMMARY}"
+
+          echo "==== Action Summary (also written to GITHUB_STEP_SUMMARY) ===="
+          cat "${summary_tmp}"
+          cat "${summary_tmp}" >> "${GITHUB_STEP_SUMMARY}"
