@@ -83,8 +83,16 @@ jobs:
         env:
           REPORT_JSON: /home/builder/_work/report.jsonl
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'true' && '1' || '0' }}
+        shell: bash
         run: |
           set -euo pipefail
+
+          echo "报告文件位置：${REPORT_JSON}"
+          if [[ -f "${REPORT_JSON}" ]]; then
+            ls -l "${REPORT_JSON}"
+          else
+            echo "报告文件不存在，将在 Summary 中提示缺失"
+          fi
 
           {
             echo "## 本次执行报告"
