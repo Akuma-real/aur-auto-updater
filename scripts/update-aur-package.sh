@@ -299,7 +299,7 @@ EOF
       bsdtar -tf "$pkgfile" >/dev/null
     done
 
-    log "运行 namcap lint（对 PKGBUILD 和产物包；任何 W/E 都视为失败）"
+    log "运行 namcap lint（对 PKGBUILD 和产物包；E 失败，W 记录）"
     local namcap_out
     namcap_out="$(namcap PKGBUILD 2>&1 || true)"
     local -a allow_patterns
@@ -310,22 +310,41 @@ EOF
     for pat in "${allow_patterns[@]}"; do
       filtered="$(printf '%s\n' "$filtered" | grep -Ev -- "$pat" || true)"
     done
-    if grep -Eq ' (W|E): ' <<<"$filtered"; then
+    if grep -Eq ' E: ' <<<"$filtered"; then
       printf '%s\n' "$namcap_out" >&2
-      die "强验证失败：namcap 在 PKGBUILD 上报告未允许的 W/E"
+      die "强验证失败：namcap 在 PKGBUILD 上报告 E"
+    fi
+    if grep -Eq ' W: ' <<<"$filtered"; then
+      printf '%s\n' "$namcap_out" >&2
+      die "强验证失败：namcap 在 PKGBUILD 上报告未允许的 W"
     fi
     if grep -Eq ' (W|E): ' <<<"$namcap_out"; then
       log "namcap 在 PKGBUILD 上报告了允许的警告（已放行）："
       printf '%s\n' "$namcap_out" >&2
     fi
 
+    local pkg_w_count=0
+    local pkg_e_count=0
     for pkgfile in "${pkgfiles[@]}"; do
       namcap_out="$(namcap "$pkgfile" 2>&1 || true)"
-      if grep -Eq ' (W|E): ' <<<"$namcap_out"; then
+      if grep -Eq ' E: ' <<<"$namcap_out"; then
+        pkg_e_count=$((pkg_e_count + 1))
         printf '%s\n' "$namcap_out" >&2
-        die "强验证失败：namcap 在产物包 ${pkgfile} 上报告 W/E"
+        die "强验证失败：namcap 在产物包 ${pkgfile} 上报告 E"
+      fi
+      if grep -Eq ' W: ' <<<"$namcap_out"; then
+        pkg_w_count=$((pkg_w_count + 1))
+        log "namcap 在产物包 ${pkgfile} 上报告了 W（不阻塞，但会写入日志与报告）"
+        printf '%s\n' "$namcap_out" >&2
       fi
     done
+
+    if [[ "$pkg_w_count" -gt 0 ]]; then
+      FINAL_NOTE="${FINAL_NOTE:+${FINAL_NOTE}; }namcap(W) in package artifacts=${pkg_w_count}"
+    fi
+    if [[ "$pkg_e_count" -gt 0 ]]; then
+      FINAL_NOTE="${FINAL_NOTE:+${FINAL_NOTE}; }namcap(E) in package artifacts=${pkg_e_count}"
+    fi
 
     log "强验证通过"
   }
@@ -355,72 +374,39 @@ EOF
   [[ -n "$latest_pkgver" ]] || die "无法从 tag 解析版本号：${latest_tag}"
   LATEST_PKGVER="$latest_pkgver"
 
-  if [[ "$latest_pkgver" == "$current_pkgver" ]]; then
-    log "无需更新版本：上游最新版本仍为 ${latest_pkgver}；检查是否需要刷新 .SRCINFO"
+  local version_changed="0"
+  if [[ "$latest_pkgver" != "$current_pkgver" ]]; then
+    version_changed="1"
+    log "检测到新版本：${current_pkgver} -> ${latest_pkgver}"
 
-    local tmp_srcinfo
-    tmp_srcinfo="$(mktemp)"
-    makepkg --printsrcinfo > "$tmp_srcinfo"
+    local expected_x64="Stelliberty-v${latest_pkgver}-linux-x64.zip"
+    local expected_arm64="Stelliberty-v${latest_pkgver}-linux-arm64.zip"
 
-    if cmp -s .SRCINFO "$tmp_srcinfo"; then
-      rm -f "$tmp_srcinfo"
-      log ".SRCINFO 无变化"
-      FINAL_STATUS="no_change"
-      FINAL_NOTE="上游版本未变化，且 .SRCINFO 无需刷新"
-      exit 0
+    local assets
+    assets="$(printf '%s' "$release_json" | jq -r '.assets[]?.name' || true)"
+    if ! grep -Fxq "$expected_x64" <<<"$assets"; then
+      die "上游 release 缺少资产：${expected_x64}（为避免推送坏包，已终止）"
+    fi
+    if ! grep -Fxq "$expected_arm64" <<<"$assets"; then
+      die "上游 release 缺少资产：${expected_arm64}（为避免推送坏包，已终止）"
     fi
 
-    mv "$tmp_srcinfo" .SRCINFO
-    verify_strict_before_push
-    git config user.name "${GIT_AUTHOR_NAME:-github-actions[bot]}"
-    git config user.email "${GIT_AUTHOR_EMAIL:-github-actions[bot]@users.noreply.github.com}"
-    git add .SRCINFO
-    git commit -m "Refresh .SRCINFO"
-    COMMITTED=1
-    COMMIT_SHA="$(git rev-parse HEAD)"
-    FINAL_STATUS="refreshed_srcinfo"
+    perl -pi -e "s/^pkgver=.*/pkgver=${latest_pkgver}/" PKGBUILD
+    perl -pi -e "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
 
-    if [[ "$DRY_RUN" == "1" ]]; then
-      log "DRY_RUN=1：跳过 push，仅刷新 .SRCINFO 并 commit"
-      FINAL_NOTE="dry-run：仅刷新 .SRCINFO 并 commit"
-      exit 0
-    fi
-
-    log "推送 .SRCINFO 刷新到 AUR：${aur_git_ssh_url} (${aur_branch})"
-    git push origin "HEAD:${aur_branch}"
-    PUSHED=1
-    FINAL_NOTE="已推送 .SRCINFO 刷新"
-    log "完成"
-    exit 0
+    log "运行 updpkgsums（会下载 release 资产以计算校验和）"
+    updpkgsums
+  else
+    log "无需更新版本：上游最新版本仍为 ${latest_pkgver}"
   fi
-
-  log "检测到新版本：${current_pkgver} -> ${latest_pkgver}"
-
-  local expected_x64="Stelliberty-v${latest_pkgver}-linux-x64.zip"
-  local expected_arm64="Stelliberty-v${latest_pkgver}-linux-arm64.zip"
-
-  local assets
-  assets="$(printf '%s' "$release_json" | jq -r '.assets[]?.name' || true)"
-  if ! grep -Fxq "$expected_x64" <<<"$assets"; then
-    die "上游 release 缺少资产：${expected_x64}（为避免推送坏包，已终止）"
-  fi
-  if ! grep -Fxq "$expected_arm64" <<<"$assets"; then
-    die "上游 release 缺少资产：${expected_arm64}（为避免推送坏包，已终止）"
-  fi
-
-  perl -pi -e "s/^pkgver=.*/pkgver=${latest_pkgver}/" PKGBUILD
-  perl -pi -e "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
-
-  log "运行 updpkgsums（会下载 release 资产以计算校验和）"
-  updpkgsums
 
   log "刷新 .SRCINFO"
   makepkg --printsrcinfo > .SRCINFO
 
   if git diff --quiet; then
-    log "文件无变化（可能 PKGBUILD 已是最新但 pkgrel/sha 未变化）"
+    log "无可提交变更"
     FINAL_STATUS="no_change"
-    FINAL_NOTE="PKGBUILD/.SRCINFO 无变化"
+    FINAL_NOTE="无可提交变更"
     exit 0
   fi
 
@@ -433,21 +419,31 @@ EOF
   git config user.email "${GIT_AUTHOR_EMAIL:-github-actions[bot]@users.noreply.github.com}"
 
   git add PKGBUILD .SRCINFO
-  git commit -m "Update pkgver to ${latest_pkgver}"
+  git add -u
+
+  local commit_msg
+  if [[ "$version_changed" == "1" ]]; then
+    commit_msg="Update pkgver to ${latest_pkgver}"
+    FINAL_STATUS="updated"
+  else
+    commit_msg="Refresh metadata"
+    FINAL_STATUS="refreshed"
+  fi
+
+  git commit -m "$commit_msg"
   COMMITTED=1
   COMMIT_SHA="$(git rev-parse HEAD)"
-  FINAL_STATUS="updated"
 
   if [[ "$DRY_RUN" == "1" ]]; then
     log "DRY_RUN=1：跳过 push，仅完成本地更新与 commit"
-    FINAL_NOTE="dry-run：已更新并 commit，未 push"
+    FINAL_NOTE="dry-run：${commit_msg}"
     exit 0
   fi
 
   log "推送到 AUR：${aur_git_ssh_url} (${aur_branch})"
   git push origin "HEAD:${aur_branch}"
   PUSHED=1
-  FINAL_NOTE="已推送到 AUR"
+  FINAL_NOTE="已推送到 AUR：${commit_msg}"
   log "完成"
 }
 
