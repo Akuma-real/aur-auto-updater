@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-STARTED_AT=""
-REPORT_JSON=""
-AUR_PKGNAME=""
-AUR_BRANCH="master"
-UPSTREAM_REPO=""
-CURRENT_PKGVER=""
-LATEST_PKGVER=""
-COMMIT_SHA=""
-COMMITTED=0
-PUSHED=0
-DRY_RUN=0
-FINAL_STATUS=""
-FINAL_NOTE=""
-LAST_ERROR=""
+: "${STARTED_AT:=}"
+: "${REPORT_JSON:=}"
+: "${AUR_PKGNAME:=}"
+: "${AUR_BRANCH:=master}"
+: "${UPSTREAM_REPO:=}"
+: "${CURRENT_PKGVER:=}"
+: "${LATEST_PKGVER:=}"
+: "${COMMIT_SHA:=}"
+: "${COMMITTED:=0}"
+: "${PUSHED:=0}"
+: "${DRY_RUN:=0}"
+: "${FINAL_STATUS:=}"
+: "${FINAL_NOTE:=}"
+: "${LAST_ERROR:=}"
 
 log() {
   printf '[%s] %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$*" >&2
