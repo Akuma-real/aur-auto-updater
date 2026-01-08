@@ -143,15 +143,20 @@ main() {
       --argjson dry_run "$DRY_RUN" \
       --argjson exit_code "$exit_code" \
       '{
-        started_at, finished_at,
-        pkgname, branch,
-        upstream_repo,
-        current_pkgver: (current_pkgver | select(length>0) // null),
-        latest_pkgver: (latest_pkgver | select(length>0) // null),
-        status,
-        note: (note | select(length>0) // null),
-        commit_sha: (commit_sha | select(length>0) // null),
-        committed, pushed, dry_run, exit_code
+        started_at: $started_at,
+        finished_at: $finished_at,
+        pkgname: $pkgname,
+        branch: $branch,
+        upstream_repo: $upstream_repo,
+        current_pkgver: (if ($current_pkgver | length) > 0 then $current_pkgver else null end),
+        latest_pkgver: (if ($latest_pkgver | length) > 0 then $latest_pkgver else null end),
+        status: $status,
+        note: (if ($note | length) > 0 then $note else null end),
+        commit_sha: (if ($commit_sha | length) > 0 then $commit_sha else null end),
+        committed: $committed,
+        pushed: $pushed,
+        dry_run: $dry_run,
+        exit_code: $exit_code
       }' >> "$REPORT_JSON"
   }
 
@@ -297,9 +302,21 @@ EOF
     log "运行 namcap lint（对 PKGBUILD 和产物包；任何 W/E 都视为失败）"
     local namcap_out
     namcap_out="$(namcap PKGBUILD 2>&1 || true)"
-    if grep -Eq ' (W|E): ' <<<"$namcap_out"; then
+    local -a allow_patterns
+    allow_patterns=('^PKGBUILD .* W: Reference to x86_64 should be changed to \\$CARCH$')
+    local filtered
+    filtered="$namcap_out"
+    local pat
+    for pat in "${allow_patterns[@]}"; do
+      filtered="$(printf '%s\n' "$filtered" | grep -Ev -- "$pat" || true)"
+    done
+    if grep -Eq ' (W|E): ' <<<"$filtered"; then
       printf '%s\n' "$namcap_out" >&2
-      die "强验证失败：namcap 在 PKGBUILD 上报告 W/E"
+      die "强验证失败：namcap 在 PKGBUILD 上报告未允许的 W/E"
+    fi
+    if grep -Eq ' (W|E): ' <<<"$namcap_out"; then
+      log "namcap 在 PKGBUILD 上报告了允许的警告（已放行）："
+      printf '%s\n' "$namcap_out" >&2
     fi
 
     for pkgfile in "${pkgfiles[@]}"; do

@@ -20,6 +20,8 @@
 - 完整构建：`makepkg --cleanbuild`（会运行 `check()`，若包定义了测试）
 - Lint：对 `PKGBUILD` 和构建产物跑 `namcap`，任何 `W/E` 都视为失败
 
+说明：`namcap` 对某些“按架构分离的变量名”（例如 `source_x86_64`）会给出风格性提示（如建议使用 `$CARCH`）。这类在 AUR 多架构包中属于可接受的告警，本项目对该类已知告警做了精确白名单放行，其余 `W/E` 仍会阻止 push。
+
 ## 包列表配置
 
 包列表在 `config/packages.json`，格式示例：
