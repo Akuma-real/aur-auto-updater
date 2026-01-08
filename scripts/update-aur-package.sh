@@ -1,6 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+STARTED_AT=""
+REPORT_JSON=""
+AUR_PKGNAME=""
+AUR_BRANCH="master"
+UPSTREAM_REPO=""
+CURRENT_PKGVER=""
+LATEST_PKGVER=""
+COMMIT_SHA=""
+COMMITTED=0
+PUSHED=0
+DRY_RUN=0
+FINAL_STATUS=""
+FINAL_NOTE=""
+LAST_ERROR=""
+
 log() {
   printf '[%s] %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$*" >&2
 }
@@ -81,28 +96,27 @@ main() {
   need_cmd sudo
   need_cmd namcap
   need_cmd bsdtar
+  need_cmd sha256sum
   need_cmd updpkgsums
   need_cmd makepkg
 
-  local started_at
-  started_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+  STARTED_AT="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 
-  local aur_pkgname="${AUR_PKGNAME:-}"
-  local aur_branch="${AUR_BRANCH:-master}"
-  local aur_git_ssh_url="${AUR_GIT_SSH_URL:-aur@aur.archlinux.org:${aur_pkgname}.git}"
+  AUR_PKGNAME="${AUR_PKGNAME:-}"
+  AUR_BRANCH="${AUR_BRANCH:-master}"
+  local aur_git_ssh_url="${AUR_GIT_SSH_URL:-aur@aur.archlinux.org:${AUR_PKGNAME}.git}"
   local workdir="${WORKDIR:-${PWD}/_work}"
-  local dry_run
-  dry_run="$(bool_to_01 "${DRY_RUN:-0}")"
+  DRY_RUN="$(bool_to_01 "${DRY_RUN:-0}")"
 
-  local report_json="${REPORT_JSON:-}"
-  local upstream_repo=""
-  local current_pkgver=""
-  local latest_pkgver=""
-  local commit_sha=""
-  local committed="0"
-  local pushed="0"
-  local final_status=""
-  local final_note=""
+  REPORT_JSON="${REPORT_JSON:-}"
+  UPSTREAM_REPO=""
+  CURRENT_PKGVER=""
+  LATEST_PKGVER=""
+  COMMIT_SHA=""
+  COMMITTED=0
+  PUSHED=0
+  FINAL_STATUS=""
+  FINAL_NOTE=""
   LAST_ERROR="${LAST_ERROR:-}"
 
   append_report() {
@@ -110,23 +124,23 @@ main() {
     local finished_at
     finished_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 
-    [[ -n "$report_json" ]] || return 0
-    mkdir -p "$(dirname "$report_json")"
+    [[ -n "$REPORT_JSON" ]] || return 0
+    mkdir -p "$(dirname "$REPORT_JSON")"
 
     jq -cn \
-      --arg started_at "$started_at" \
+      --arg started_at "$STARTED_AT" \
       --arg finished_at "$finished_at" \
-      --arg pkgname "$aur_pkgname" \
-      --arg branch "$aur_branch" \
-      --arg upstream_repo "$upstream_repo" \
-      --arg current_pkgver "$current_pkgver" \
-      --arg latest_pkgver "$latest_pkgver" \
-      --arg status "$final_status" \
-      --arg note "$final_note" \
-      --arg commit_sha "$commit_sha" \
-      --argjson committed "$committed" \
-      --argjson pushed "$pushed" \
-      --argjson dry_run "$dry_run" \
+      --arg pkgname "$AUR_PKGNAME" \
+      --arg branch "$AUR_BRANCH" \
+      --arg upstream_repo "$UPSTREAM_REPO" \
+      --arg current_pkgver "$CURRENT_PKGVER" \
+      --arg latest_pkgver "$LATEST_PKGVER" \
+      --arg status "$FINAL_STATUS" \
+      --arg note "$FINAL_NOTE" \
+      --arg commit_sha "$COMMIT_SHA" \
+      --argjson committed "$COMMITTED" \
+      --argjson pushed "$PUSHED" \
+      --argjson dry_run "$DRY_RUN" \
       --argjson exit_code "$exit_code" \
       '{
         started_at, finished_at,
@@ -138,14 +152,14 @@ main() {
         note: (note | select(length>0) // null),
         commit_sha: (commit_sha | select(length>0) // null),
         committed, pushed, dry_run, exit_code
-      }' >> "$report_json"
+      }' >> "$REPORT_JSON"
   }
 
   trap 'LAST_ERROR=${LAST_ERROR:-"命令失败（exit=$?）: ${BASH_COMMAND}"}' ERR
-  trap 'ec=$?; if [[ $ec -ne 0 && -z "${final_status}" ]]; then final_status="failed"; final_note="${LAST_ERROR:-"unknown error"}"; fi; append_report "$ec"; exit $ec' EXIT
+  trap 'ec=$?; trap - EXIT; if [[ $ec -ne 0 && -z "${FINAL_STATUS:-}" ]]; then FINAL_STATUS="failed"; FINAL_NOTE="${LAST_ERROR:-"unknown error"}"; fi; append_report "$ec" || true; exit $ec' EXIT
 
   if [[ "${1:-}" == "--pkgname" ]]; then
-    aur_pkgname="${2:-}"
+    AUR_PKGNAME="${2:-}"
     shift 2 || true
   elif [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
     cat <<'EOF'
@@ -163,16 +177,16 @@ EOF
     exit 0
   fi
 
-  if [[ -z "$aur_pkgname" ]]; then
+  if [[ -z "$AUR_PKGNAME" ]]; then
     die "缺少 AUR 包名：请设置 AUR_PKGNAME 或传入 --pkgname"
   fi
 
-  aur_git_ssh_url="${AUR_GIT_SSH_URL:-aur@aur.archlinux.org:${aur_pkgname}.git}"
+  aur_git_ssh_url="${AUR_GIT_SSH_URL:-aur@aur.archlinux.org:${AUR_PKGNAME}.git}"
 
   export GIT_TERMINAL_PROMPT=0
 
   mkdir -p "$workdir"
-  local repo_dir="${workdir}/${aur_pkgname}"
+  local repo_dir="${workdir}/${AUR_PKGNAME}"
 
   if [[ -d "${repo_dir}/.git" ]]; then
     log "更新本地缓存仓库：${repo_dir}"
@@ -191,6 +205,16 @@ EOF
   cd "$repo_dir"
 
   [[ -f PKGBUILD ]] || die "未找到 PKGBUILD：${repo_dir}/PKGBUILD"
+
+  normalize_dep_pkgname() {
+    local dep="$1"
+    dep="${dep%%:*}"
+    dep="${dep## }"
+    dep="${dep%% }"
+    dep="${dep%%[<>=]*}"
+    dep="$(printf '%s' "$dep" | xargs)"
+    printf '%s' "$dep"
+  }
 
   verify_strict_before_push() {
     log "开始强验证（推送前必须通过）"
@@ -236,11 +260,22 @@ EOF
       die "强验证失败：aarch64 资产 sha256 不匹配（期望 ${aarch64_sum}，实际 ${aarch64_actual}）"
     fi
 
-    log "安装 makedepends/checkdepends（只装构建/测试依赖，不装运行时 depends）"
-    local -a build_deps
-    mapfile -t build_deps < <(grep -E '^[[:space:]]*(makedepends|checkdepends) = ' .SRCINFO | awk -F' = ' '{print $2}' | sort -u)
-    if [[ "${#build_deps[@]}" -gt 0 ]]; then
-      sudo pacman -S --noconfirm --needed "${build_deps[@]}"
+    log "安装 depends/makedepends/checkdepends（强验证要求完整构建）"
+    local -a deps_raw deps_norm
+    mapfile -t deps_raw < <(
+      grep -E '^[[:space:]]*(depends|makedepends|checkdepends) = ' .SRCINFO \
+        | awk -F' = ' '{print $2}' \
+        | sort -u
+    )
+    deps_norm=()
+    local dep pkg
+    for dep in "${deps_raw[@]}"; do
+      pkg="$(normalize_dep_pkgname "$dep")"
+      [[ -n "$pkg" ]] || continue
+      deps_norm+=("$pkg")
+    done
+    if [[ "${#deps_norm[@]}" -gt 0 ]]; then
+      sudo pacman -S --noconfirm --needed "${deps_norm[@]}"
     fi
 
     log "完整构建并运行 check()（makepkg --cleanbuild）"
@@ -281,25 +316,27 @@ EOF
   local current_pkgver pkgbuild_url
   current_pkgver="$(parse_kv_from_pkgbuild "pkgver" PKGBUILD | tr -d '[:space:]' || true)"
   [[ -n "$current_pkgver" ]] || die "无法从 PKGBUILD 解析 pkgver"
+  CURRENT_PKGVER="$current_pkgver"
 
   pkgbuild_url="$(parse_kv_from_pkgbuild "url" PKGBUILD | tr -d '[:space:]' || true)"
   [[ -n "$pkgbuild_url" ]] || die "无法从 PKGBUILD 解析 url=（用于推断 GitHub 仓库）"
 
-  upstream_repo="${UPSTREAM_GITHUB_REPO:-}"
-  if [[ -z "$upstream_repo" ]]; then
-    upstream_repo="$(github_repo_from_url "$pkgbuild_url" || true)"
+  UPSTREAM_REPO="${UPSTREAM_GITHUB_REPO:-}"
+  if [[ -z "$UPSTREAM_REPO" ]]; then
+    UPSTREAM_REPO="$(github_repo_from_url "$pkgbuild_url" || true)"
   fi
-  [[ -n "$upstream_repo" ]] || die "无法确定上游 GitHub 仓库，请设置 UPSTREAM_GITHUB_REPO（例如 Kindness-Kismet/Stelliberty）"
+  [[ -n "$UPSTREAM_REPO" ]] || die "无法确定上游 GitHub 仓库，请设置 UPSTREAM_GITHUB_REPO（例如 Kindness-Kismet/Stelliberty）"
 
-  log "当前 AUR pkgver=${current_pkgver}，上游=${upstream_repo}"
+  log "当前 AUR pkgver=${current_pkgver}，上游=${UPSTREAM_REPO}"
 
   local release_json latest_tag latest_pkgver
-  release_json="$(fetch_latest_github_release_tag "$upstream_repo")"
+  release_json="$(fetch_latest_github_release_tag "$UPSTREAM_REPO")"
   latest_tag="$(printf '%s' "$release_json" | jq -r '.tag_name // empty')"
   [[ -n "$latest_tag" ]] || die "GitHub API 返回缺少 tag_name（可能没有 release 或被限流）"
 
   latest_pkgver="$(normalize_github_tag_to_pkgver "$latest_tag")"
   [[ -n "$latest_pkgver" ]] || die "无法从 tag 解析版本号：${latest_tag}"
+  LATEST_PKGVER="$latest_pkgver"
 
   if [[ "$latest_pkgver" == "$current_pkgver" ]]; then
     log "无需更新版本：上游最新版本仍为 ${latest_pkgver}；检查是否需要刷新 .SRCINFO"
@@ -311,8 +348,8 @@ EOF
     if cmp -s .SRCINFO "$tmp_srcinfo"; then
       rm -f "$tmp_srcinfo"
       log ".SRCINFO 无变化"
-      final_status="no_change"
-      final_note="上游版本未变化，且 .SRCINFO 无需刷新"
+      FINAL_STATUS="no_change"
+      FINAL_NOTE="上游版本未变化，且 .SRCINFO 无需刷新"
       exit 0
     fi
 
@@ -322,20 +359,20 @@ EOF
     git config user.email "${GIT_AUTHOR_EMAIL:-github-actions[bot]@users.noreply.github.com}"
     git add .SRCINFO
     git commit -m "Refresh .SRCINFO"
-    committed="1"
-    commit_sha="$(git rev-parse HEAD)"
-    final_status="refreshed_srcinfo"
+    COMMITTED=1
+    COMMIT_SHA="$(git rev-parse HEAD)"
+    FINAL_STATUS="refreshed_srcinfo"
 
-    if [[ "$dry_run" == "1" ]]; then
+    if [[ "$DRY_RUN" == "1" ]]; then
       log "DRY_RUN=1：跳过 push，仅刷新 .SRCINFO 并 commit"
-      final_note="dry-run：仅刷新 .SRCINFO 并 commit"
+      FINAL_NOTE="dry-run：仅刷新 .SRCINFO 并 commit"
       exit 0
     fi
 
     log "推送 .SRCINFO 刷新到 AUR：${aur_git_ssh_url} (${aur_branch})"
     git push origin "HEAD:${aur_branch}"
-    pushed="1"
-    final_note="已推送 .SRCINFO 刷新"
+    PUSHED=1
+    FINAL_NOTE="已推送 .SRCINFO 刷新"
     log "完成"
     exit 0
   fi
@@ -365,8 +402,8 @@ EOF
 
   if git diff --quiet; then
     log "文件无变化（可能 PKGBUILD 已是最新但 pkgrel/sha 未变化）"
-    final_status="no_change"
-    final_note="PKGBUILD/.SRCINFO 无变化"
+    FINAL_STATUS="no_change"
+    FINAL_NOTE="PKGBUILD/.SRCINFO 无变化"
     exit 0
   fi
 
@@ -380,20 +417,20 @@ EOF
 
   git add PKGBUILD .SRCINFO
   git commit -m "Update pkgver to ${latest_pkgver}"
-  committed="1"
-  commit_sha="$(git rev-parse HEAD)"
-  final_status="updated"
+  COMMITTED=1
+  COMMIT_SHA="$(git rev-parse HEAD)"
+  FINAL_STATUS="updated"
 
-  if [[ "$dry_run" == "1" ]]; then
+  if [[ "$DRY_RUN" == "1" ]]; then
     log "DRY_RUN=1：跳过 push，仅完成本地更新与 commit"
-    final_note="dry-run：已更新并 commit，未 push"
+    FINAL_NOTE="dry-run：已更新并 commit，未 push"
     exit 0
   fi
 
   log "推送到 AUR：${aur_git_ssh_url} (${aur_branch})"
   git push origin "HEAD:${aur_branch}"
-  pushed="1"
-  final_note="已推送到 AUR"
+  PUSHED=1
+  FINAL_NOTE="已推送到 AUR"
   log "完成"
 }
 
