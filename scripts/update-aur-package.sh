@@ -440,8 +440,8 @@ EOF
     exit 0
   fi
 
-  log "推送到 AUR：${aur_git_ssh_url} (${aur_branch})"
-  git push origin "HEAD:${aur_branch}"
+  log "推送到 AUR：${aur_git_ssh_url} (${AUR_BRANCH})"
+  git push origin "HEAD:${AUR_BRANCH}"
   PUSHED=1
   FINAL_NOTE="已推送到 AUR：${commit_msg}"
   log "完成"
