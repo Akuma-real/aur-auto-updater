@@ -303,7 +303,7 @@ EOF
     local namcap_out
     namcap_out="$(namcap PKGBUILD 2>&1 || true)"
     local -a allow_patterns
-    allow_patterns=('^PKGBUILD .* W: Reference to x86_64 should be changed to \\$CARCH$')
+    allow_patterns=('^PKGBUILD .* W: Reference to x86_64 should be changed to [$]CARCH$')
     local filtered
     filtered="$namcap_out"
     local pat
