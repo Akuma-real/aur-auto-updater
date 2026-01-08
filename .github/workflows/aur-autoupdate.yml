@@ -36,13 +36,16 @@ jobs:
           set -euo pipefail
           pacman -Syu --noconfirm --needed \
             git openssh curl jq perl \
-            pacman-contrib libarchive rsync
+            pacman-contrib libarchive rsync \
+            sudo namcap
 
       - name: Create non-root user for makepkg
         run: |
           set -euo pipefail
           useradd -m -U builder
           chown -R builder:builder /home/builder
+          echo 'builder ALL=(ALL) NOPASSWD: /usr/bin/pacman' > /etc/sudoers.d/builder-pacman
+          chmod 440 /etc/sudoers.d/builder-pacman
 
       - name: Configure SSH key for AUR
         env:
@@ -74,3 +77,53 @@ jobs:
         run: |
           set -euo pipefail
           su - builder -c "cd '${GITHUB_WORKSPACE}' && env ONLY_PKGNAME='${ONLY_PKGNAME}' DRY_RUN='${DRY_RUN}' WORKDIR='${WORKDIR}' GITHUB_TOKEN='${GITHUB_TOKEN}' GIT_SSH_COMMAND='${GIT_SSH_COMMAND}' bash scripts/update-all.sh"
+
+      - name: Write run report (Job Summary)
+        if: always()
+        env:
+          REPORT_JSON: /home/builder/_work/report.jsonl
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'true' && '1' || '0' }}
+        run: |
+          set -euo pipefail
+
+          {
+            echo "## 本次执行报告"
+            echo ""
+            echo "- 时间（UTC）：$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo "- 触发方式：${GITHUB_EVENT_NAME}"
+            echo "- Dry run：${DRY_RUN:-unknown}"
+            echo ""
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          if [[ ! -f "${REPORT_JSON}" ]]; then
+            echo "- 未生成报告文件：\`${REPORT_JSON}\`" >> "${GITHUB_STEP_SUMMARY}"
+            exit 0
+          fi
+
+          echo "| 包名 | 状态 | 当前版本 | 最新版本 | commit | pushed | 备注 |" >> "${GITHUB_STEP_SUMMARY}"
+          echo "|---|---|---:|---:|---|---:|---|" >> "${GITHUB_STEP_SUMMARY}"
+          if jq -sr '.' "${REPORT_JSON}" >/dev/null 2>&1; then
+            jq -sr '
+              .[] |
+              [
+                (.pkgname // "-"),
+                (.status // "-"),
+                (.current_pkgver // "-"),
+                (.latest_pkgver // "-"),
+                (.commit_sha // "-"),
+                ((.pushed|tostring) // "0"),
+                ((.note // "-") | gsub("[\\r\\n]+"; " ") | gsub("\\|"; "\\\\|"))
+              ] |
+              "| " + (.[0:7] | join(" | ")) + " |"
+            ' "${REPORT_JSON}" >> "${GITHUB_STEP_SUMMARY}"
+            failed_count="$(jq -sr '[.[] | select(.status=="failed")] | length' "${REPORT_JSON}")"
+          else
+            echo "| - | failed | - | - | - | 0 | 报告文件解析失败，已附加原始内容 |" >> "${GITHUB_STEP_SUMMARY}"
+            echo "" >> "${GITHUB_STEP_SUMMARY}"
+            echo '```' >> "${GITHUB_STEP_SUMMARY}"
+            sed -n '1,200p' "${REPORT_JSON}" >> "${GITHUB_STEP_SUMMARY}"
+            echo '```' >> "${GITHUB_STEP_SUMMARY}"
+            failed_count="unknown"
+          fi
+          echo "" >> "${GITHUB_STEP_SUMMARY}"
+          echo "- 失败数量：${failed_count}" >> "${GITHUB_STEP_SUMMARY}"

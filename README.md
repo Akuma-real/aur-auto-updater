@@ -10,6 +10,16 @@
   - `dry_run=true`：只更新/计算校验和/生成 `.SRCINFO`/commit，不 push 到 AUR
   - `pkgname=xxx`：只更新指定包；留空则更新全部包
 
+## 推送前强验证（强制启用）
+
+每次在向 AUR push 之前，都会在 AUR 仓库目录内执行以下验证，任何一步失败都会阻止 push：
+
+- `.SRCINFO` 与 `PKGBUILD` 一致性校验（`makepkg --printsrcinfo` 对比）
+- `makepkg --verifysource`：验证当前架构的 source 校验和
+- 额外校验 `aarch64` release 资产的 sha256（避免在 `x86_64` 环境更新时遗漏 `sha256sums_aarch64`）
+- 完整构建：`makepkg --cleanbuild`（会运行 `check()`，若包定义了测试）
+- Lint：对 `PKGBUILD` 和构建产物跑 `namcap`，任何 `W/E` 都视为失败
+
 ## 包列表配置
 
 包列表在 `config/packages.json`，格式示例：
@@ -46,3 +56,12 @@
   - 正常生成新 `.SRCINFO`
   - 能 commit（但不会 push）
 - 确认无误后，把 `dry_run` 取消勾选再跑一次即可 push 到 AUR。
+
+## 本次执行报告（Action Summary）
+
+每次 Action 运行结束会在 GitHub Actions 的 Job Summary 里生成一份报告（Markdown 表格），包含每个包的：
+
+- 状态（是否更新/是否刷新 `.SRCINFO`/是否失败）
+- 当前版本与最新版本
+- 本次 commit SHA
+- 是否已 push 到 AUR

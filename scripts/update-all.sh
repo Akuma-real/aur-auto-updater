@@ -20,8 +20,12 @@ main() {
 
   local config_file="${PACKAGES_CONFIG:-config/packages.json}"
   local only_pkgname="${ONLY_PKGNAME:-}"
+  local workdir="${WORKDIR:-${PWD}/_work}"
+  local report_json="${REPORT_JSON:-${workdir}/report.jsonl}"
 
   [[ -f "$config_file" ]] || die "未找到配置文件：${config_file}"
+  mkdir -p "$workdir"
+  : > "$report_json"
 
   local count
   count="$(jq -r '.packages | length' "$config_file")"
@@ -50,6 +54,7 @@ main() {
     (
       export AUR_PKGNAME="$name"
       export AUR_BRANCH="$branch"
+      export REPORT_JSON="$report_json"
       if [[ -n "$upstream" ]]; then
         export UPSTREAM_GITHUB_REPO="$upstream"
       else
@@ -62,4 +67,3 @@ main() {
 }
 
 main "$@"
-
