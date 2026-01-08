@@ -1,0 +1,76 @@
+name: Auto update AUR packages
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "只测试（更新/计算校验和/生成 .SRCINFO/commit），不 push 到 AUR"
+        type: boolean
+        default: true
+      pkgname:
+        description: "只更新指定 AUR 包名（留空则按 config/packages.json 全部更新）"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: aur-autoupdate
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:base-devel
+
+    steps:
+      - name: Checkout updater repo
+        uses: actions/checkout@v4
+
+      - name: Install dependencies (Arch)
+        run: |
+          set -euo pipefail
+          pacman -Syu --noconfirm --needed \
+            git openssh curl jq perl \
+            pacman-contrib libarchive rsync
+
+      - name: Create non-root user for makepkg
+        run: |
+          set -euo pipefail
+          useradd -m -U builder
+          chown -R builder:builder /home/builder
+
+      - name: Configure SSH key for AUR
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          AUR_KNOWN_HOSTS: ${{ secrets.AUR_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          [[ -n "${AUR_SSH_PRIVATE_KEY:-}" ]] || { echo "Missing secret: AUR_SSH_PRIVATE_KEY" >&2; exit 1; }
+
+          install -d -m 700 /home/builder/.ssh
+          printf '%s\n' "${AUR_SSH_PRIVATE_KEY}" | tr -d '\r' > /home/builder/.ssh/id_ed25519
+          chmod 600 /home/builder/.ssh/id_ed25519
+
+          if [[ -n "${AUR_KNOWN_HOSTS:-}" ]]; then
+            printf '%s\n' "${AUR_KNOWN_HOSTS}" > /home/builder/.ssh/known_hosts
+          else
+            ssh-keyscan -H aur.archlinux.org > /home/builder/.ssh/known_hosts
+          fi
+          chmod 600 /home/builder/.ssh/known_hosts
+          chown -R builder:builder /home/builder/.ssh
+
+      - name: Update & push to AUR
+        env:
+          ONLY_PKGNAME: ${{ github.event.inputs.pkgname }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'true' && '1' || '0' }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WORKDIR: ${{ github.workspace }}/_work
+          GIT_SSH_COMMAND: ssh -i /home/builder/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes
+        run: |
+          set -euo pipefail
+          su - builder -c "cd '${GITHUB_WORKSPACE}' && env ONLY_PKGNAME='${ONLY_PKGNAME}' DRY_RUN='${DRY_RUN}' WORKDIR='${WORKDIR}' GITHUB_TOKEN='${GITHUB_TOKEN}' GIT_SSH_COMMAND='${GIT_SSH_COMMAND}' bash scripts/update-all.sh"

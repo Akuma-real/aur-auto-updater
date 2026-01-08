@@ -1,0 +1,10 @@
+{
+  "packages": [
+    {
+      "name": "stelliberty-bin",
+      "branch": "master",
+      "upstream_github_repo": "Kindness-Kismet/Stelliberty"
+    }
+  ]
+}
+
