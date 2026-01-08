@@ -69,7 +69,7 @@ jobs:
           ONLY_PKGNAME: ${{ github.event.inputs.pkgname }}
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'true' && '1' || '0' }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          WORKDIR: ${{ github.workspace }}/_work
+          WORKDIR: /home/builder/_work
           GIT_SSH_COMMAND: ssh -i /home/builder/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes
         run: |
           set -euo pipefail
