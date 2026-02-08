@@ -209,6 +209,10 @@ EOF
 
   cd "$repo_dir"
 
+  local srcdest_dir="${repo_dir}/.srcdest"
+  mkdir -p "$srcdest_dir"
+  export SRCDEST="$srcdest_dir"
+
   [[ -f PKGBUILD ]] || die "未找到 PKGBUILD：${repo_dir}/PKGBUILD"
 
   normalize_dep_pkgname() {
@@ -219,6 +223,73 @@ EOF
     dep="${dep%%[<>=]*}"
     dep="$(printf '%s' "$dep" | xargs)"
     printf '%s' "$dep"
+  }
+
+  optimize_stelliberty_license_source() {
+    [[ "$AUR_PKGNAME" == "stelliberty-bin" ]] || return 0
+
+    local optimized=0
+
+    if grep -Fq '"LICENSE::https://raw.githubusercontent.com/Kindness-Kismet/Stelliberty/v${pkgver}/LICENSE"' PKGBUILD; then
+      perl -pi -e 's|"LICENSE::https://raw\.githubusercontent\.com/Kindness-Kismet/Stelliberty/v\$\{pkgver\}/LICENSE"|"LICENSE-v\${pkgver}::https://raw.githubusercontent.com/Kindness-Kismet/Stelliberty/v\${pkgver}/LICENSE"|g' PKGBUILD
+      optimized=1
+    fi
+
+    if grep -Fq 'install -Dm644 "${srcdir}/LICENSE" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"' PKGBUILD; then
+      perl -pi -e 's|install -Dm644 "\$\{srcdir\}/LICENSE" "\$\{pkgdir\}/usr/share/licenses/\$\{pkgname\}/LICENSE"|install -Dm644 "\${srcdir}/LICENSE-v\${pkgver}" "\${pkgdir}/usr/share/licenses/\${pkgname}/LICENSE"|g' PKGBUILD
+      optimized=1
+    fi
+
+    if [[ "$optimized" == "1" ]]; then
+      log "已优化 stelliberty-bin：LICENSE source 改为版本化文件名"
+    fi
+  }
+
+  clear_url_source_cache() {
+    log "清理 URL source 缓存（避免同名文件跨版本复用）"
+
+    local tmp_srcinfo
+    tmp_srcinfo="$(mktemp)"
+    makepkg --printsrcinfo > "$tmp_srcinfo"
+
+    local -a source_entries
+    mapfile -t source_entries < <(
+      grep -E '^[[:space:]]*source(_[[:alnum:]_]+)? = ' "$tmp_srcinfo" \
+        | awk -F' = ' '{print $2}'
+    )
+    rm -f "$tmp_srcinfo"
+
+    local removed_count=0
+    local src_entry src_name src_url
+    for src_entry in "${source_entries[@]}"; do
+      src_name=""
+      src_url=""
+
+      if [[ "$src_entry" == *"::"* ]]; then
+        src_name="${src_entry%%::*}"
+        src_url="${src_entry#*::}"
+      else
+        src_url="$src_entry"
+        if [[ "$src_entry" =~ ^https?:// ]]; then
+          src_name="${src_entry##*/}"
+          src_name="${src_name%%\?*}"
+        fi
+      fi
+
+      [[ "$src_url" =~ ^https?:// ]] || continue
+      [[ -n "$src_name" ]] || continue
+
+      if [[ -f "$src_name" ]]; then
+        rm -f -- "$src_name"
+        removed_count=$((removed_count + 1))
+      fi
+      if [[ -f "${SRCDEST}/${src_name}" ]]; then
+        rm -f -- "${SRCDEST}/${src_name}"
+        removed_count=$((removed_count + 1))
+      fi
+    done
+
+    log "URL source 缓存清理完成：${removed_count} 个文件"
   }
 
   verify_strict_before_push() {
@@ -350,6 +421,9 @@ EOF
   }
 
   local current_pkgver pkgbuild_url
+
+  optimize_stelliberty_license_source
+
   current_pkgver="$(parse_kv_from_pkgbuild "pkgver" PKGBUILD | tr -d '[:space:]' || true)"
   [[ -n "$current_pkgver" ]] || die "无法从 PKGBUILD 解析 pkgver"
   CURRENT_PKGVER="$current_pkgver"
@@ -393,6 +467,8 @@ EOF
 
     perl -pi -e "s/^pkgver=.*/pkgver=${latest_pkgver}/" PKGBUILD
     perl -pi -e "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
+
+    clear_url_source_cache
 
     log "运行 updpkgsums（会下载 release 资产以计算校验和）"
     updpkgsums

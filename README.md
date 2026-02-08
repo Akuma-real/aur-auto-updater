@@ -6,6 +6,7 @@
 
 - 每 6 小时触发一次：按 `config/packages.json` 列表逐个更新 → 查询 GitHub Releases 最新版本 → 更新 `PKGBUILD`/校验和/`.SRCINFO` → commit → push 到 AUR。
 - 如果上游版本没变，也会尝试刷新一次 `.SRCINFO`（用于修正 `.SRCINFO` 与 `PKGBUILD` 不一致的情况）；无变化则不会 push。
+- 为避免同名 URL source（如 `LICENSE`）跨版本复用旧缓存，更新脚本会在版本变化时清理对应缓存，并固定使用仓库内独立 `SRCDEST`。
 - 支持手动触发：`Actions -> Auto update AUR packages -> Run workflow`
   - `dry_run=true`：只更新/计算校验和/生成 `.SRCINFO`/commit，不 push 到 AUR
   - `pkgname=xxx`：只更新指定包；留空则更新全部包
