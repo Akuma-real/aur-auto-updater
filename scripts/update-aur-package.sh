@@ -12,6 +12,7 @@ set -euo pipefail
 : "${COMMITTED:=0}"
 : "${PUSHED:=0}"
 : "${DRY_RUN:=0}"
+: "${PACKAGING_FIX_APPLIED:=0}"
 : "${FINAL_STATUS:=}"
 : "${FINAL_NOTE:=}"
 : "${LAST_ERROR:=}"
@@ -225,23 +226,135 @@ EOF
     printf '%s' "$dep"
   }
 
-  optimize_stelliberty_license_source() {
+  normalize_stelliberty_pkgbuild() {
     [[ "$AUR_PKGNAME" == "stelliberty-bin" ]] || return 0
 
-    local optimized=0
+    local normalized=0
+    local install_file="${AUR_PKGNAME}.install"
+
+    apply_pkgbuild_perl() {
+      local mode="$1"
+      local expr="$2"
+      local before_file
+      before_file="$(mktemp)"
+      cp PKGBUILD "$before_file"
+
+      if [[ "$mode" == "slurp" ]]; then
+        perl -0pi -e "$expr" PKGBUILD
+      else
+        perl -pi -e "$expr" PKGBUILD
+      fi
+
+      if ! cmp -s "$before_file" PKGBUILD; then
+        normalized=1
+      fi
+      rm -f "$before_file"
+    }
 
     if grep -Fq '"LICENSE::https://raw.githubusercontent.com/Kindness-Kismet/Stelliberty/v${pkgver}/LICENSE"' PKGBUILD; then
-      perl -pi -e 's|"LICENSE::https://raw\.githubusercontent\.com/Kindness-Kismet/Stelliberty/v\$\{pkgver\}/LICENSE"|"LICENSE-v\${pkgver}::https://raw.githubusercontent.com/Kindness-Kismet/Stelliberty/v\${pkgver}/LICENSE"|g' PKGBUILD
-      optimized=1
+      apply_pkgbuild_perl line 's|"LICENSE::https://raw\.githubusercontent\.com/Kindness-Kismet/Stelliberty/v\$\{pkgver\}/LICENSE"|"LICENSE-v\${pkgver}::https://raw.githubusercontent.com/Kindness-Kismet/Stelliberty/v\${pkgver}/LICENSE"|g'
     fi
 
     if grep -Fq 'install -Dm644 "${srcdir}/LICENSE" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"' PKGBUILD; then
-      perl -pi -e 's|install -Dm644 "\$\{srcdir\}/LICENSE" "\$\{pkgdir\}/usr/share/licenses/\$\{pkgname\}/LICENSE"|install -Dm644 "\${srcdir}/LICENSE-v\${pkgver}" "\${pkgdir}/usr/share/licenses/\${pkgname}/LICENSE"|g' PKGBUILD
-      optimized=1
+      apply_pkgbuild_perl line 's|install -Dm644 "\$\{srcdir\}/LICENSE" "\$\{pkgdir\}/usr/share/licenses/\$\{pkgname\}/LICENSE"|install -Dm644 "\${srcdir}/LICENSE-v\${pkgver}" "\${pkgdir}/usr/share/licenses/\${pkgname}/LICENSE"|g'
     fi
 
-    if [[ "$optimized" == "1" ]]; then
-      log "已优化 stelliberty-bin：LICENSE source 改为版本化文件名"
+    if grep -Fq 'ensure_exec() {
+  local file="$1"
+  if [[ -f "${file}" && ! -x "${file}" ]]; then
+    chmod 755 "${file}"
+  fi
+}' PKGBUILD; then
+      apply_pkgbuild_perl slurp 's|ensure_exec\(\) \{\n  local file="\$1"\n  if \[\[ -f "\$\{file\}" && ! -x "\$\{file\}" \]\]; then\n    chmod 755 "\$\{file\}"\n  fi\n\}|ensure_exec() {\n  local file="\$1"\n  if [[ ! -f "\${file}" ]]; then\n    printf '\''stelliberty: required file not found: %s\\n'\'' "\${file}" >\&2\n    exit 1\n  fi\n  if [[ ! -x "\${file}" ]]; then\n    chmod 755 "\${file}"\n  fi\n}|g'
+    fi
+
+    if grep -Eq 'assets/clash-core/clash-core|assets/clash/clash-core' PKGBUILD; then
+      apply_pkgbuild_perl slurp 's|  chmod \+x "\$\{_install_dir\}/stelliberty"\n  chmod \+x "\$\{_install_dir\}/data/flutter_assets/assets/service/stelliberty-service"\n  if \[\[ -f "\$\{_install_dir\}/data/flutter_assets/assets/clash(?:-core)?/clash-core" \]\]; then\n    chmod 755 "\$\{_install_dir\}/data/flutter_assets/assets/clash(?:-core)?/clash-core"\n  fi|  chmod +x "\${_install_dir}/stelliberty"\n  chmod +x "\${_install_dir}/data/flutter_assets/assets/service/stelliberty-service"\n\n  local _clash_core="\${_install_dir}/data/flutter_assets/assets/clash/clash-core"\n  if [[ -f "\${_clash_core}" ]]; then\n    chmod 755 "\${_clash_core}"\n  else\n    echo "Missing clash core: \${_clash_core}" >\&2\n    return 1\n  fi|g'
+      apply_pkgbuild_perl line 's|assets/clash-core/clash-core|assets/clash/clash-core|g'
+    fi
+
+    if grep -Fq "optdepends=('xdg-utils: for xdg-open support')" PKGBUILD; then
+      apply_pkgbuild_perl slurp 's|optdepends=\('\''xdg-utils: for xdg-open support'\''\)|optdepends=(\n  '\''xdg-utils: for xdg-open support'\''\n  '\''polkit: for pkexec-based service installation from the UI'\''\n)|g'
+    fi
+
+    if ! grep -Fq "install=${install_file}" PKGBUILD; then
+      apply_pkgbuild_perl slurp "s|^license=\\('LicenseRef-Stelliberty'\\)\$|license=('LicenseRef-Stelliberty')\\ninstall=${install_file}|m"
+    fi
+
+    if grep -Fq '  bsdtar -xf "${srcdir}/${_archive}" -C "${_install_dir}"' PKGBUILD; then
+      apply_pkgbuild_perl slurp 's|  bsdtar -xf "\$\{srcdir\}/\$\{_archive\}" -C "\$\{_install_dir\}"|  bsdtar -xf "\${srcdir}/\${_archive}" -C "\${_install_dir}"\n  rm -f "\${_install_dir}/data/.portable"\n  printf '\''%s\\n'\'' "\${pkgver}-\${pkgrel}" > "\${_install_dir}/data/.package-sync-revision"|g'
+    fi
+
+    if grep -Fq 'sync_app() {
+  install -d "${user_dir}"
+  rsync -a --delete \
+    --exclude '\''data/subscriptions'\'' \
+    --exclude '\''data/subscriptions/***'\'' \
+    --exclude '\''data/overrides'\'' \
+    --exclude '\''data/overrides/***'\'' \
+    --exclude '\''data/running.logs*'\'' \
+    "${system_dir}/" "${user_dir}/"
+}' PKGBUILD; then
+      apply_pkgbuild_perl slurp 's|sync_app\(\) \{\n  install -d "\$\{user_dir\}"\n  rsync -a --delete \\\n    --exclude '\''data/subscriptions'\'' \\\n    --exclude '\''data/subscriptions/\*\*\*'\'' \\\n    --exclude '\''data/overrides'\'' \\\n    --exclude '\''data/overrides/\*\*\*'\'' \\\n    --exclude '\''data/running\.logs\*'\'' \\\n    "\$\{system_dir\}/" "\$\{user_dir\}/"\n\}|sync_app() {\n  install -d "\${user_dir}"\n\n  local -a preserve_patterns=(\n    '\''data/subscriptions'\''\n    '\''data/subscriptions/***'\''\n    '\''data/subscriptions_list.json'\''\n    '\''data/overrides'\''\n    '\''data/overrides/***'\''\n    '\''data/overrides_list.json'\''\n    '\''data/image_cache'\''\n    '\''data/image_cache/***'\''\n    '\''data/dns_config.yaml'\''\n    '\''data/stelliberty_proxy.pac'\''\n    '\''data/settings_preferences.json'\''\n    '\''data/settings_preferences_dev.json'\''\n    '\''data/running.logs*'\''\n    '\''data/runtime'\''\n    '\''data/runtime/***'\''\n  )\n\n  local -a rsync_args=(-a --delete)\n  local pattern\n  for pattern in "\${preserve_patterns[@]}"; do\n    rsync_args+=(--exclude "\${pattern}")\n  done\n\n  rsync "\${rsync_args[@]}" "\${system_dir}/" "\${user_dir}/"\n}|g'
+    fi
+
+    if grep -Fq 'data_root="${XDG_DATA_HOME:-${HOME}/.local/share}/stelliberty"' PKGBUILD; then
+      apply_pkgbuild_perl slurp 's|data_root="\$\{XDG_DATA_HOME:-\$\{HOME\}/\.local/share\}/stelliberty"|# Allow overriding the app data root when HOME\/XDG_DATA_HOME contains unsupported characters.\ndata_root="\${STELLIBERTY_DATA_ROOT:-\${XDG_DATA_HOME:-\${HOME}/.local/share}/stelliberty}"|g'
+    fi
+
+    if ! grep -Fq 'token_of() {' PKGBUILD && grep -Fq 'sync_app() {' PKGBUILD; then
+      apply_pkgbuild_perl slurp 's|\n\nsync_app\(\) \{|\n\ntoken_of() {\n  local file="\$1"\n  if [[ -r "\$file" ]]; then\n    head -n1 "\$file"\n  fi\n}\n\nsync_app() {|g'
+    fi
+
+    if grep -Fq 'sys_ver="$(version_of "${system_dir}/data/flutter_assets/version.json")"
+usr_ver="$(version_of "${user_dir}/data/flutter_assets/version.json")"
+
+if [[ "${usr_ver:-}" != "${sys_ver:-}" ]]; then
+  sync_app
+fi' PKGBUILD; then
+      apply_pkgbuild_perl slurp 's~sys_ver="\$\(version_of "\$\{system_dir\}/data/flutter_assets/version\.json"\)"\nusr_ver="\$\(version_of "\$\{user_dir\}/data/flutter_assets/version\.json"\)"\n\nif \[\[ "\$\{usr_ver:-\}" != "\$\{sys_ver:-\}" \]\]; then\n  sync_app\nfi~sys_ver="\$(version_of "\${system_dir}/data/flutter_assets/version.json")"\nusr_ver="\$(version_of "\${user_dir}/data/flutter_assets/version.json")"\nsys_sync_revision="\$(token_of "\${system_dir}/data/.package-sync-revision")"\nusr_sync_revision="\$(token_of "\${user_dir}/data/.package-sync-revision")"\n\nif [[ "\${usr_ver:-}" != "\${sys_ver:-}" || "\${usr_sync_revision:-}" != "\${sys_sync_revision:-}" ]]; then\n  sync_app\nfi~g'
+    fi
+
+    write_stelliberty_install_script() {
+      local target_file="$1"
+      local tmp_file
+      tmp_file="$(mktemp)"
+
+      cat > "$tmp_file" <<'EOF'
+post_install() {
+  cat <<'EOM'
+stelliberty-bin 已安装。
+
+- 如需在应用 UI 中安装 Stelliberty service，请先安装 polkit。
+- 如果 HOME 或 XDG_DATA_HOME 路径包含中文或其他非 ASCII 字符，可设置 STELLIBERTY_DATA_ROOT 到纯 ASCII 目录后再启动。
+EOM
+}
+
+post_upgrade() {
+  cat <<'EOM'
+stelliberty-bin 已升级。
+
+- 本版本起不再保留 upstream ZIP 的 .portable 标记，避免被应用误判为便携版。
+- 如需让新的包同步策略生效，请重启 Stelliberty。
+- 如需在应用 UI 中安装 Stelliberty service，请先安装 polkit。
+- 如果 HOME 或 XDG_DATA_HOME 路径包含中文或其他非 ASCII 字符，可设置 STELLIBERTY_DATA_ROOT 到纯 ASCII 目录后再启动。
+EOM
+}
+EOF
+
+      if [[ ! -f "$target_file" ]] || ! cmp -s "$tmp_file" "$target_file"; then
+        mv "$tmp_file" "$target_file"
+        normalized=1
+      else
+        rm -f "$tmp_file"
+      fi
+    }
+
+    write_stelliberty_install_script "$install_file"
+
+    if [[ "$normalized" == "1" ]]; then
+      PACKAGING_FIX_APPLIED=1
+      log "已规范 stelliberty-bin PKGBUILD：修正 LICENSE、clash core、.portable、optdepends、install 脚本与用户数据同步策略"
     fi
   }
 
@@ -420,13 +533,17 @@ EOF
     log "强验证通过"
   }
 
-  local current_pkgver pkgbuild_url
+  local current_pkgver current_pkgrel pkgbuild_url
 
-  optimize_stelliberty_license_source
+  PACKAGING_FIX_APPLIED=0
+  normalize_stelliberty_pkgbuild
 
   current_pkgver="$(parse_kv_from_pkgbuild "pkgver" PKGBUILD | tr -d '[:space:]' || true)"
   [[ -n "$current_pkgver" ]] || die "无法从 PKGBUILD 解析 pkgver"
   CURRENT_PKGVER="$current_pkgver"
+
+  current_pkgrel="$(parse_kv_from_pkgbuild "pkgrel" PKGBUILD | tr -d '[:space:]' || true)"
+  [[ "$current_pkgrel" =~ ^[0-9]+$ ]] || die "无法从 PKGBUILD 解析数字型 pkgrel"
 
   pkgbuild_url="$(parse_kv_from_pkgbuild "url" PKGBUILD | tr -d '[:space:]' || true)"
   [[ -n "$pkgbuild_url" ]] || die "无法从 PKGBUILD 解析 url=（用于推断 GitHub 仓库）"
@@ -474,6 +591,14 @@ EOF
     updpkgsums
   else
     log "无需更新版本：上游最新版本仍为 ${latest_pkgver}"
+
+    if [[ "$PACKAGING_FIX_APPLIED" == "1" ]]; then
+      local next_pkgrel
+      next_pkgrel=$((current_pkgrel + 1))
+      log "检测到打包修复且上游版本未变：pkgrel ${current_pkgrel} -> ${next_pkgrel}"
+      perl -pi -e "s/^pkgrel=.*/pkgrel=${next_pkgrel}/" PKGBUILD
+      current_pkgrel="$next_pkgrel"
+    fi
   fi
 
   log "刷新 .SRCINFO"
@@ -495,12 +620,18 @@ EOF
   git config user.email "${GIT_AUTHOR_EMAIL:-github-actions[bot]@users.noreply.github.com}"
 
   git add PKGBUILD .SRCINFO
+  if [[ -f "${AUR_PKGNAME}.install" ]]; then
+    git add "${AUR_PKGNAME}.install"
+  fi
   git add -u
 
   local commit_msg
   if [[ "$version_changed" == "1" ]]; then
     commit_msg="Update pkgver to ${latest_pkgver}"
     FINAL_STATUS="updated"
+  elif [[ "$PACKAGING_FIX_APPLIED" == "1" ]]; then
+    commit_msg="Bump pkgrel to ${current_pkgrel}"
+    FINAL_STATUS="refreshed"
   else
     commit_msg="Refresh metadata"
     FINAL_STATUS="refreshed"
