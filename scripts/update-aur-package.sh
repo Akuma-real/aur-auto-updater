@@ -259,6 +259,10 @@ EOF
       apply_pkgbuild_perl line 's|install -Dm644 "\$\{srcdir\}/LICENSE" "\$\{pkgdir\}/usr/share/licenses/\$\{pkgname\}/LICENSE"|install -Dm644 "\${srcdir}/LICENSE-v\${pkgver}" "\${pkgdir}/usr/share/licenses/\${pkgname}/LICENSE"|g'
     fi
 
+    if grep -Fq "depends=('gtk3' 'libkeybinder3' 'nss' 'openssl' 'libappindicator-gtk3' 'libdbusmenu-gtk3' 'rsync')" PKGBUILD; then
+      apply_pkgbuild_perl slurp 's|depends=\('\''gtk3'\'' '\''libkeybinder3'\'' '\''nss'\'' '\''openssl'\'' '\''libappindicator-gtk3'\'' '\''libdbusmenu-gtk3'\'' '\''rsync'\''\)|depends=(\n  '\''gtk3'\''\n  '\''libkeybinder3'\''\n  '\''nss'\''\n  '\''openssl'\''\n  '\''libappindicator'\''\n  '\''libdbusmenu-gtk3'\''\n  '\''util-linux-libs'\''\n  '\''xz'\''\n  '\''rsync'\''\n)|g'
+    fi
+
     if grep -Fq 'ensure_exec() {
   local file="$1"
   if [[ -f "${file}" && ! -x "${file}" ]]; then
@@ -281,7 +285,9 @@ EOF
       apply_pkgbuild_perl slurp "s|^license=\\('LicenseRef-Stelliberty'\\)\$|license=('LicenseRef-Stelliberty')\\ninstall=${install_file}|m"
     fi
 
-    if grep -Fq '  bsdtar -xf "${srcdir}/${_archive}" -C "${_install_dir}"' PKGBUILD; then
+    if grep -Fq '  printf '\''%s\n'\'' "${pkgver}-${pkgrel}" > "${_install_dir}/data/.package-sync-revision"' PKGBUILD; then
+      apply_pkgbuild_perl slurp 's|(  rm -f "\$\{_install_dir\}/data/\.portable"\n  printf '\''%s\\n'\'' "\$\{pkgver\}-\$\{pkgrel\}" > "\$\{_install_dir\}/data/\.package-sync-revision"\n){2,}|  rm -f "\${_install_dir}/data/.portable"\n  printf '\''%s\\n'\'' "\${pkgver}-\${pkgrel}" > "\${_install_dir}/data/.package-sync-revision"\n|g'
+    elif grep -Fq '  bsdtar -xf "${srcdir}/${_archive}" -C "${_install_dir}"' PKGBUILD; then
       apply_pkgbuild_perl slurp 's|  bsdtar -xf "\$\{srcdir\}/\$\{_archive\}" -C "\$\{_install_dir\}"|  bsdtar -xf "\${srcdir}/\${_archive}" -C "\${_install_dir}"\n  rm -f "\${_install_dir}/data/.portable"\n  printf '\''%s\\n'\'' "\${pkgver}-\${pkgrel}" > "\${_install_dir}/data/.package-sync-revision"|g'
     fi
 
