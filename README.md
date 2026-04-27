@@ -5,11 +5,21 @@
 ## 工作方式（简述）
 
 - 每 6 小时触发一次：按 `config/packages.json` 列表逐个更新 → 查询 GitHub Releases 最新版本 → 更新 `PKGBUILD`/校验和/`.SRCINFO` → commit → push 到 AUR。
+- 主入口是 `python scripts/aur_auto_updater.py run-all`。GitHub Actions 直接调用这个 Python 工具，旧的 Bash 主流程已移除。
 - 如果上游版本没变，也会尝试刷新一次 `.SRCINFO`（用于修正 `.SRCINFO` 与 `PKGBUILD` 不一致的情况）；无变化则不会 push。
 - 为避免同名 URL source（如 `LICENSE`）跨版本复用旧缓存，更新脚本会在版本变化时清理对应缓存，并固定使用仓库内独立 `SRCDEST`。
 - 支持手动触发：`Actions -> Auto update AUR packages -> Run workflow`
   - `dry_run=true`：只更新/计算校验和/生成 `.SRCINFO`/commit，不 push 到 AUR
   - `pkgname=xxx`：只更新指定包；留空则更新全部包
+
+本地或容器内直接运行时可用以下环境变量控制入口：
+
+- `PACKAGES_CONFIG`: 包列表配置文件，默认 `config/packages.json`
+- `ONLY_PKGNAME`: 只更新指定 AUR 包；留空则更新全部
+- `DRY_RUN`: `1` 表示只 commit 不 push，默认 `0`
+- `WORKDIR`: AUR 仓库缓存和构建工作目录，默认 `./_work`
+- `REPORT_JSON`: JSONL 执行报告路径，默认 `$WORKDIR/report.jsonl`
+- `GITHUB_TOKEN`: 查询 GitHub Releases 时使用，建议在 Actions 中传入
 
 ## 推送前强验证（强制启用）
 
@@ -37,7 +47,8 @@
 
 1) 先在 AUR 上创建并能正常 push 的包仓库（至少有 `PKGBUILD`）
 2) 把新包加进 `config/packages.json`
-3) 等下一次 schedule 或手动触发（建议先 `dry_run=true`）
+3) 如需包专属修补逻辑，在 `scripts/aur_auto_updater.py` 里新增对应 profile
+4) 等下一次 schedule 或手动触发（建议先 `dry_run=true`）
 
 ## 你需要做的设置（一次性）
 

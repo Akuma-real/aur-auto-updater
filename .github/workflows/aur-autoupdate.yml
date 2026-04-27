@@ -35,7 +35,7 @@ jobs:
         run: |
           set -euo pipefail
           pacman -Syu --noconfirm --needed \
-            git openssh curl jq perl \
+            git openssh curl jq perl python \
             pacman-contrib libarchive rsync \
             sudo namcap
 
@@ -76,7 +76,7 @@ jobs:
           GIT_SSH_COMMAND: ssh -i /home/builder/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes
         run: |
           set -euo pipefail
-          su - builder -c "cd '${GITHUB_WORKSPACE}' && env ONLY_PKGNAME='${ONLY_PKGNAME}' DRY_RUN='${DRY_RUN}' WORKDIR='${WORKDIR}' GITHUB_TOKEN='${GITHUB_TOKEN}' GIT_SSH_COMMAND='${GIT_SSH_COMMAND}' bash scripts/update-all.sh"
+          su - builder -c "cd '${GITHUB_WORKSPACE}' && env ONLY_PKGNAME='${ONLY_PKGNAME}' DRY_RUN='${DRY_RUN}' WORKDIR='${WORKDIR}' REPORT_JSON='${WORKDIR}/report.jsonl' GITHUB_TOKEN='${GITHUB_TOKEN}' GIT_SSH_COMMAND='${GIT_SSH_COMMAND}' python scripts/aur_auto_updater.py run-all"
 
       - name: Write run report (Job Summary)
         if: always()
